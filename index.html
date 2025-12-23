@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>配達ログ</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="配達ログ">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        @keyframes flash {
+            0% { opacity: 0; }
+            50% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+        .animate-flash {
+            animation: flash 0.3s ease-out;
+        }
+        body {
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // アイコンコンポーネント
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} style={{width: size, height: size}} className={className}></i>;
+        };
+
+        function App() {
+            const [completed, setCompleted] = useState(0);
+            const [carryOut, setCarryOut] = useState(0);
+            const [vibeMode, setVibeMode] = useState(false);
+            const [monthlyData, setMonthlyData] = useState(() => {
+                const saved = localStorage.getItem('deliveryAppData');
+                return saved ? JSON.parse(saved).monthlyData : {};
+            });
+            const [showResult, setShowResult] = useState(false);
+            const [showGraph, setShowGraph] = useState(null);
+            const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+            const audioContextRef = useRef(null);
+
+            // データ保存
+            useEffect(() => {
+                const updatedMonthlyData = { ...monthlyData, [selectedDate]: completed };
+                localStorage.setItem('deliveryAppData', JSON.stringify({
+                    carryOut,
+                    monthlyData: updatedMonthlyData,
+                    lastUpdated: new Date().toISOString()
+                }));
+            }, [completed, carryOut, selectedDate]);
+
+            // 日付変更時に読み込み
+            useEffect(() => {
+                setCompleted(monthlyData[selectedDate] || 0);
+            }, [selectedDate]);
+
+            const changeDate = (days) => {
+                const date = new Date(selectedDate);
+                date.setDate(date.getDate() + days);
+                setSelectedDate(date.toISOString().slice(0, 10));
+            };
+
+            const playSound = (type) => {
+                try {
+                    const ctx = audioContextRef.current || new (window.AudioContext || window.webkitAudioContext)();
+                    audioContextRef.current = ctx;
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+
+                    let freq = 600, dur = 0.1;
+                    if (type === 'success') { freq = 800; }
+                    else if (type === 'decrease') { freq = 400; dur = 0.08; }
+                    
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + dur);
+                    osc.start();
+                    osc.stop(ctx.currentTime + dur);
+                } catch (e) {}
+            };
+
+            const triggerVibration = (p) => { if (navigator.vibrate) navigator.vibrate(p); };
+
+            const createFlash = () => {
+                const flash = document.createElement('div');
+                flash.className = "fixed inset-0 bg-blue-500/30 z-[100] pointer-events-none animate-flash";
+                document.body.appendChild(flash);
+                setTimeout(() => flash.remove(), 300);
+            };
+
+            const percent = carryOut > 0 ? Math.round((completed / carryOut) * 100) : 0;
+
+            const getMonthlyTotal = () => {
+                const currentMonth = selectedDate.slice(0, 7);
+                return Object.entries(monthlyData)
+                    .filter(([d]) => d.startsWith(currentMonth))
+                    .reduce((sum, [, v]) => sum + v, 0);
+            };
+
+            // グラフ表示
+            if (showGraph) {
+                const isMonth = showGraph === 'month';
+                const title = isMonth ? "月別の合計" : "日別の合計";
+                const maxValue = isMonth ? 4000 : 250;
+                let data = [];
+                
+                if (isMonth) {
+                    for (let i = 11; i >= 0; i--) {
+                        const d = new Date();
+                        d.setMonth(d.getMonth() - i);
+                        const key = d.toISOString().slice(0, 7);
+                        const val = Object.entries(monthlyData)
+                            .filter(([date]) => date.startsWith(key))
+                            .reduce((s, [, v]) => s + v, 0);
+                        data.push({ label: `${d.getMonth() + 1}月`, value: val });
+                    }
+                } else {
+                    for (let i = 29; i >= 0; i--) {
+                        const d = new Date();
+                        d.setDate(d.getDate() - i);
+                        const key = d.toISOString().slice(0, 10);
+                        data.push({ label: `${d.getDate()}`, value: monthlyData[key] || 0 });
+                    }
+                }
+
+                return (
+                    <div className="min-h-screen bg-white">
+                        <header className="p-4 border-b flex items-center gap-4">
+                            <button onClick={() => setShowGraph(null)} className="p-2 bg-slate-100 rounded-full">
+                                <Icon name="chevron-left" />
+                            </button>
+                            <h1 className="font-bold text-lg">{title}</h1>
+                        </header>
+                        <main className="p-6">
+                            <div className="flex items-end gap-1 h-64 border-b border-l p-2 overflow-x-auto">
+                                {data.map((item, i) => (
+                                    <div key={i} className="flex-1 flex flex-col items-center min-w-[30px]">
+                                        <div 
+                                            className="w-full bg-blue-500 rounded-t-sm" 
+                                            style={{height: `${Math.min((item.value/maxValue)*100, 100)}%`}}
+                                        ></div>
+                                        <span className="text-[10px] mt-1 text-slate-500">{item.label}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </main>
+                    </div>
+                );
+            }
+
+            // リザルト表示
+            if (showResult) {
+                return (
+                    <div className="min-h-screen bg-blue-600 flex flex-col items-center justify-center p-6 text-white text-center">
+                        <div className="space-y-4 mb-8">
+                            <p className="text-sm font-bold opacity-80 uppercase">Today's Result</p>
+                            <h2 className="text-8xl font-black">{completed}</h2>
+                            <p className="text-2xl font-bold">完了率 {percent}%</p>
+                        </div>
+                        <div className="flex flex-col w-full max-w-xs gap-3">
+                            <button onClick={() => setShowResult(false)} className="bg-white text-blue-600 py-4 rounded-2xl font-bold shadow-lg">戻る</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // 見ないで操作モード
+            if (vibeMode) {
+                const handleAction = (isPlus) => {
+                    if (!isPlus && completed === 0) return;
+                    setCompleted(prev => isPlus ? prev + 1 : prev - 1);
+                    playSound(isPlus ? 'success' : 'decrease');
+                    triggerVibration(isPlus ? [100, 50, 100] : [50]);
+                    createFlash();
+                };
+                return (
+                    <div className="min-h-screen bg-blue-700 flex relative overflow-hidden">
+                        <div className="flex-1 h-full active:bg-white/10" onClick={() => handleAction(false)}></div>
+                        <div className="flex-1 h-full active:bg-white/10" onClick={() => handleAction(true)}></div>
+                        <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center text-white">
+                            <p className="text-sm font-bold opacity-50 mb-4">見ないで操作中</p>
+                            <div className="text-9xl font-black">{completed}</div>
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); setVibeMode(false); }}
+                                className="mt-20 pointer-events-auto bg-white text-blue-700 px-8 py-4 rounded-full font-bold"
+                            >戻る</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="max-w-md mx-auto min-h-screen flex flex-col">
+                    <header className="p-4 bg-white border-b flex justify-between items-center sticky top-0 z-10">
+                        <div className="flex items-center gap-2">
+                            <div className="bg-blue-600 p-2 rounded-lg text-white">
+                                <Icon name="vibrate" size={20} />
+                            </div>
+                            <h1 className="font-bold text-lg">配達ログ</h1>
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => changeDate(-1)} className="p-2 bg-slate-50 rounded">←</button>
+                            <div className="text-xs font-bold self-center px-2">{selectedDate}</div>
+                            <button onClick={() => changeDate(1)} className="p-2 bg-slate-50 rounded">→</button>
+                        </div>
+                    </header>
+
+                    <main className="p-4 space-y-4">
+                        <div className="bg-gradient-to-br from-blue-600 to-blue-500 rounded-3xl p-6 text-white shadow-xl">
+                            <div className="text-center mb-4">
+                                <p className="text-xs font-bold opacity-70">本日の進捗</p>
+                                <div className="text-6xl font-black my-2">{completed} <span className="text-2xl opacity-50">/ {carryOut}</span></div>
+                                <div className="w-full h-2 bg-white/20 rounded-full overflow-hidden">
+                                    <div className="h-full bg-white transition-all" style={{width: `${percent}%`}}></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-white p-4 rounded-2xl border">
+                                <label className="text-xs font-bold text-slate-400">持出数</label>
+                                <input 
+                                    type="number" 
+                                    value={carryOut} 
+                                    onChange={(e) => setCarryOut(parseInt(e.target.value) || 0)}
+                                    className="w-full text-2xl font-bold text-blue-600 outline-none"
+                                />
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border">
+                                <label className="text-xs font-bold text-slate-400">完了数</label>
+                                <input 
+                                    type="number" 
+                                    value={completed} 
+                                    onChange={(e) => setCompleted(parseInt(e.target.value) || 0)}
+                                    className="w-full text-2xl font-bold text-green-600 outline-none"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <button onClick={() => setShowGraph('month')} className="bg-purple-50 p-4 rounded-2xl border border-purple-100 text-left">
+                                <Icon name="bar-chart-3" className="text-purple-600 mb-2" />
+                                <div className="text-2xl font-black text-purple-700">{getMonthlyTotal()}</div>
+                                <p className="text-[10px] font-bold text-purple-400 uppercase">Monthly Total</p>
+                            </button>
+                            <button onClick={() => setVibeMode(true)} className="bg-slate-900 p-4 rounded-2xl text-left text-white shadow-lg">
+                                <Icon name="vibrate" className="text-blue-400 mb-2" />
+                                <div className="text-lg font-bold">見ないで操作</div>
+                                <p className="text-[10px] font-bold opacity-50 uppercase">Vibration Mode</p>
+                            </button>
+                        </div>
+
+                        <button 
+                            onClick={() => setShowResult(true)}
+                            className="w-full bg-green-500 text-white py-4 rounded-2xl font-bold shadow-lg flex items-center justify-center gap-2"
+                        >
+                            <Icon name="share-2" size={18} />
+                            本日の成果を表示
+                        </button>
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
